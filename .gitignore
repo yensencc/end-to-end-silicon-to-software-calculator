@@ -1,0 +1,9 @@
+.DS_Store
+*.bak
+*.lck
+schematic/.history/
+fab/
+fab_demo/
+rtl/obj_dir/
+firmware/target/
+*.vcd
