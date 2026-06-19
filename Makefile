@@ -1,4 +1,4 @@
-.PHONY: all setup simulate-rtl simulate-fw check-schematic agent export visualize clean
+.PHONY: all setup simulate-rtl simulate-fw check-schematic agent export visualize simulate clean
 
 SHELL := /bin/bash
 PATH := $(HOME)/.cargo/bin:$(PATH)
@@ -66,6 +66,11 @@ check-schematic:
 		echo "/opt/homebrew/bin/kicad-cli not found - install KiCad via 'brew install --cask kicad'"; \
 		echo "Skipping schematic check (optional for MVP)."; \
 	fi
+
+simulate:
+	@echo "--- Interactive QEMU Calculator (close GUI to exit) ---"
+	cd firmware && cargo build --target thumbv7m-none-eabi 2>&1
+	python3 simulator/gui.py
 
 agent:
 	@echo "--- Agent Run ---"
