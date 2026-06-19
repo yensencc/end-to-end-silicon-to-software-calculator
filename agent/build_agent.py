@@ -4,16 +4,19 @@ import sys
 import os
 
 STEPS = [
-    ("RTL Compile",   ["make", "simulate-rtl"]),
-    ("Firmware Build", ["make", "simulate-fw"]),
+    ("RTL Compile",     ["make", "simulate-rtl"]),
+    ("Firmware Build",  ["make", "simulate-fw"]),
     ("Schematic Check", ["make", "check-schematic"]),
+    ("PnP Visualize",   ["make", "visualize-pnp"]),
 ]
 
 def run_step(name, cmd):
     print(f"\n{'='*50}")
     print(f"STEP: {name}")
     print(f"{'='*50}")
-    result = subprocess.run(cmd, capture_output=False, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = os.environ.copy()
+    env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
+    result = subprocess.run(cmd, capture_output=False, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), env=env)
     return result.returncode == 0
 
 def main():
