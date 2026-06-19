@@ -26,8 +26,8 @@ except ImportError:
 FAB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
 POS_FILE = os.path.join(FAB_DIR, "calculator_pos.csv")
 
-TRAVEL_STEPS = 10
-DWELL_STEPS = 4
+TRAVEL_STEPS = 8
+DWELL_STEPS = 3
 
 color_map = {"U": "red", "DISP": "purple", "J": "blue",
              "R": "green", "SW": "orange"}
@@ -96,6 +96,13 @@ def build_frame_data(comps):
                     "label": f"Returning for {comps[i+1]['ref']}"
                 })
 
+    # Final hold frame
+    last = comps[-1]
+    frames.append({
+        "x": last["x"], "y": -last["y"],
+        "comp_idx": len(comps) - 1, "placed": len(comps) - 1,
+        "label": f"ALL {len(comps)} COMPONENTS PLACED"
+    })
     return frames
 
 
@@ -123,6 +130,8 @@ def build_animation(comps, frame_data, save_path=None):
     ax.add_patch(feeder_rect)
     ax.text(board_w / 2, 9, "FEEDER BANK (reels + trays)",
             ha="center", fontsize=9, color="#666")
+    ax.plot(board_w / 2, 9, marker="v", color="#cc7700", markersize=12, zorder=5)
+    ax.text(board_w / 2, 10.5, "Pickup", ha="center", fontsize=7, color="#cc7700")
 
     # Component dots
     scatter_placed = []
@@ -149,25 +158,30 @@ def build_animation(comps, frame_data, save_path=None):
     ax.legend(handles=legend_elements, loc="lower right", fontsize=8)
 
     # Trail line (head path history)
-    (trail_line,) = ax.plot([], [], "r-", linewidth=1.5, alpha=0.4, zorder=4)
+    (trail_line,) = ax.plot([], [], "r-", linewidth=2.5, alpha=0.7, zorder=4)
 
-    # Head dot
-    (head_dot,) = ax.plot([], [], "ro", markersize=10,
-                          markeredgecolor="darkred", markeredgewidth=1.5,
-                          zorder=5)
+    # Head dot — large, bright, with glow
+    (head_dot,) = ax.plot([], [], "o", color="#ff2200", markersize=14,
+                          markeredgecolor="black", markeredgewidth=2,
+                          zorder=6)
 
-    # Dashed line from head to target
-    (target_line,) = ax.plot([], [], "r--", linewidth=1, alpha=0.5, zorder=4)
+    # Head glow ring
+    (head_glow,) = ax.plot([], [], "o", color="#ff8800", markersize=22,
+                           alpha=0.3, zorder=5)
+
+    # Dashed line from head to target (travel path segment)
+    (target_line,) = ax.plot([], [], "r--", linewidth=1.5, alpha=0.6, zorder=4)
 
     # Texts
     nozzle_text = ax.text(0, 0, "", fontsize=8, color="darkred", weight="bold")
     step_text = ax.text(board_w / 2, -board_h - 3, "", ha="center", fontsize=9)
 
-    artists = [trail_line, head_dot, target_line, nozzle_text, step_text] + scatter_placed
+    artists = [trail_line, head_dot, head_glow, target_line, nozzle_text, step_text] + scatter_placed
 
     def init():
         trail_line.set_data([], [])
         head_dot.set_data([], [])
+        head_glow.set_data([], [])
         target_line.set_data([], [])
         nozzle_text.set_text("")
         step_text.set_text("")
@@ -185,9 +199,10 @@ def build_animation(comps, frame_data, save_path=None):
     def animate(frame_idx):
         fd = frame_data[frame_idx]
 
-        # Head position
+        # Head position + glow ring
         hx, hy = fd["x"], fd["y"]
         head_dot.set_data([hx], [hy])
+        head_glow.set_data([hx], [hy])
 
         # Trail up to this frame
         trail_line.set_data(trail_x_history[:frame_idx + 1],
@@ -219,16 +234,17 @@ def build_animation(comps, frame_data, save_path=None):
 
         return artists
 
+    use_blit = save_path is None
     ani = animation.FuncAnimation(
         fig, animate, frames=len(frame_data),
-        init_func=init, interval=80, repeat=True, blit=True
+        init_func=init, interval=80, repeat=use_blit, blit=use_blit
     )
 
     plt.tight_layout()
 
     if save_path:
         print(f"Saving animation ({len(frame_data)} frames) to {save_path} ...")
-        ani.save(save_path, writer="pillow", fps=10, dpi=100)
+        ani.save(save_path, writer="pillow", fps=8, dpi=100)
         print("Done.")
     else:
         plt.show()
