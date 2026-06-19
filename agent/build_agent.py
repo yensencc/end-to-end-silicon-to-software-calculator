@@ -4,10 +4,11 @@ import sys
 import os
 
 STEPS = [
-    ("RTL Compile",     ["make", "simulate-rtl"]),
-    ("Firmware Build",  ["make", "simulate-fw"]),
-    ("Schematic Check", ["make", "check-schematic"]),
-    ("PnP Visualize",   ["make", "visualize-pnp"]),
+    ("RTL Compile",      ["make", "simulate-rtl"]),
+    ("Firmware Build",   ["make", "simulate-fw"]),
+    ("Schematic Check",  ["make", "check-schematic"]),
+    ("PnP Animate",      ["make", "visualize-pnp"]),
+    ("Trajectory Report", ["make", "analyze-pnp"]),
 ]
 
 def run_step(name, cmd):
