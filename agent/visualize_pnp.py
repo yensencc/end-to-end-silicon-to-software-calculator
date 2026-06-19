@@ -26,8 +26,8 @@ except ImportError:
 FAB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
 POS_FILE = os.path.join(FAB_DIR, "calculator_pos.csv")
 
-TRAVEL_STEPS = 8
-DWELL_STEPS = 3
+TRAVEL_STEPS = 6
+DWELL_STEPS = 2
 
 color_map = {"U": "red", "DISP": "purple", "J": "blue",
              "R": "green", "SW": "orange"}
@@ -244,7 +244,7 @@ def build_animation(comps, frame_data, save_path=None):
 
     if save_path:
         print(f"Saving animation ({len(frame_data)} frames) to {save_path} ...")
-        ani.save(save_path, writer="pillow", fps=8, dpi=100)
+        ani.save(save_path, writer="pillow", fps=8, dpi=80)
         print("Done.")
     else:
         plt.show()

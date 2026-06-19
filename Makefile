@@ -34,7 +34,7 @@ analyze-pnp:
 	@echo "--- SMT Trajectory Analysis ---"
 	$(HOME)/calc-venv/bin/python3 agent/analyze_pnp.py --all
 	@echo "Outputs:"
-	@ls -lh $(FAB_DIR)/trajectory_analysis.png $(FAB_DIR)/optimization_compare.png $(FAB_DIR)/trajectory.gif
+	@ls -lh $(FAB_DIR)/trajectory_analysis.png $(FAB_DIR)/optimization_compare.png $(FAB_DIR)/trajectory.gif $(FAB_DIR)/trajectory_analysis.gif
 	open $(FAB_DIR)/trajectory_analysis.png
 
 # === Hardware Simulation ===
