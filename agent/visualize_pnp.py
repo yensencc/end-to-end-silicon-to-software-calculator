@@ -2,7 +2,7 @@
 """
 Pick-and-Place Head Travel Visualizer
 Simulates the Fuji AIMEX III head moving across the PCB placing components.
-Reads the POS CSV and animates the placement sequence.
+Reads the POS CSV and animates the placement sequence with smooth interpolation.
 
 Usage:
   python visualize_pnp.py           # interactive window
@@ -20,11 +20,17 @@ try:
     import matplotlib.animation as animation
     import matplotlib.patches as patches
 except ImportError:
-    print("Installing matplotlib...", file=sys.stderr)
+    print("matplotlib not found — run: pip install matplotlib", file=sys.stderr)
     sys.exit(1)
 
 FAB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
 POS_FILE = os.path.join(FAB_DIR, "calculator_pos.csv")
+
+TRAVEL_STEPS = 10
+DWELL_STEPS = 4
+
+color_map = {"U": "red", "DISP": "purple", "J": "blue",
+             "R": "green", "SW": "orange"}
 
 
 def load_components():
@@ -44,8 +50,58 @@ def load_components():
     return components
 
 
-def build_animation(comps, save_path=None):
+def build_frame_data(comps):
+    """Build interpolated frame sequence.
+
+    Returns list of dicts: {x, y, comp_idx, placed, label}
+    """
     board_w, board_h = 62, 42
+    feeder = (board_w / 2, 9)
+    frames = []
+
+    for i, c in enumerate(comps):
+        target = (c["x"], -c["y"])
+        start = feeder
+
+        # Travel from start (feeder) to target component
+        for t in range(TRAVEL_STEPS):
+            frac = (t + 1) / TRAVEL_STEPS
+            frames.append({
+                "x": start[0] + (target[0] - start[0]) * frac,
+                "y": start[1] + (target[1] - start[1]) * frac,
+                "comp_idx": i,
+                "placed": None,
+                "label": f"Moving to {c['ref']}"
+            })
+
+        # Dwell at component
+        for t in range(DWELL_STEPS):
+            frames.append({
+                "x": target[0],
+                "y": target[1],
+                "comp_idx": i,
+                "placed": i,
+                "label": f"Placing {c['ref']} ({c['val']})"
+            })
+
+        # Return to feeder (except after last component)
+        if i < len(comps) - 1:
+            for t in range(TRAVEL_STEPS):
+                frac = (t + 1) / TRAVEL_STEPS
+                frames.append({
+                    "x": target[0] + (feeder[0] - target[0]) * frac,
+                    "y": target[1] + (feeder[1] - target[1]) * frac,
+                    "comp_idx": i,
+                    "placed": i,
+                    "label": f"Returning for {comps[i+1]['ref']}"
+                })
+
+    return frames
+
+
+def build_animation(comps, frame_data, save_path=None):
+    board_w, board_h = 62, 42
+    n = len(comps)
 
     fig, ax = plt.subplots(figsize=(12, 8))
     ax.set_xlim(-5, board_w + 5)
@@ -55,12 +111,12 @@ def build_animation(comps, save_path=None):
     ax.set_xlabel("X (mm)")
     ax.set_ylabel("Y (mm)")
 
+    # Board
     board = patches.Rectangle((0, -board_h), board_w, board_h,
                               linewidth=2, edgecolor="black", facecolor="#f0f8e8")
     ax.add_patch(board)
-    ax.text(board_w / 2, -board_h / 2, "62mm x 42mm PCB",
-            ha="center", va="center", fontsize=10, color="#aaa")
 
+    # Feeder
     feeder_rect = patches.Rectangle((-4, 5), board_w + 8, 8,
                                     linewidth=1, edgecolor="#888",
                                     facecolor="#fff3cd", alpha=0.5)
@@ -68,79 +124,116 @@ def build_animation(comps, save_path=None):
     ax.text(board_w / 2, 9, "FEEDER BANK (reels + trays)",
             ha="center", fontsize=9, color="#666")
 
-    color_map = {"U": "red", "DISP": "purple", "J": "blue",
-                 "R": "green", "SW": "orange"}
-    for c in comps:
+    # Component dots
+    scatter_placed = []
+    scatter_unplaced = []
+    for i, c in enumerate(comps):
         color = color_map.get(c["ref"][:4], "gray")
         size = 120 if c["ref"].startswith("U") else 60
-        ax.scatter(c["x"], -c["y"], c=color, s=size, alpha=0.6, zorder=3)
+        su = ax.scatter(c["x"], -c["y"], c=color, s=size, alpha=0.15, zorder=3)
+        scatter_unplaced.append(su)
+        sp = ax.scatter(c["x"], -c["y"], c=color, s=size * 1.5,
+                        alpha=0.95, edgecolors="black", linewidth=0.5,
+                        zorder=3, visible=False)
+        scatter_placed.append(sp)
         ax.annotate(c["ref"], (c["x"], -c["y"]),
                     fontsize=6, ha="center", va="bottom", color=color)
 
+    # Legend
     legend_elements = [
-        patches.Patch(color="red", label="IC (U1)"),
-        patches.Patch(color="purple", label="Display"),
-        patches.Patch(color="blue", label="Connector"),
-        patches.Patch(color="green", label="Resistor"),
-        patches.Patch(color="orange", label="Switch"),
+        patches.Patch(color=c, label=l)
+        for c, l in [("red", "IC (U1)"), ("purple", "Display"),
+                     ("blue", "Connector"), ("green", "Resistor"),
+                     ("orange", "Switch")]
     ]
     ax.legend(handles=legend_elements, loc="lower right", fontsize=8)
 
-    (head_line,) = ax.plot([], [], "r-", linewidth=1.5, alpha=0.7, zorder=4)
-    (head_dot,) = ax.plot([], [], "ro", markersize=8, zorder=5)
+    # Trail line (head path history)
+    (trail_line,) = ax.plot([], [], "r-", linewidth=1.5, alpha=0.4, zorder=4)
+
+    # Head dot
+    (head_dot,) = ax.plot([], [], "ro", markersize=10,
+                          markeredgecolor="darkred", markeredgewidth=1.5,
+                          zorder=5)
+
+    # Dashed line from head to target
+    (target_line,) = ax.plot([], [], "r--", linewidth=1, alpha=0.5, zorder=4)
+
+    # Texts
     nozzle_text = ax.text(0, 0, "", fontsize=8, color="darkred", weight="bold")
-    step_text = ax.text(board_w / 2, -board_h - 3, "",
-                        ha="center", fontsize=9)
+    step_text = ax.text(board_w / 2, -board_h - 3, "", ha="center", fontsize=9)
+
+    artists = [trail_line, head_dot, target_line, nozzle_text, step_text] + scatter_placed
 
     def init():
-        head_line.set_data([], [])
+        trail_line.set_data([], [])
         head_dot.set_data([], [])
+        target_line.set_data([], [])
         nozzle_text.set_text("")
         step_text.set_text("")
-        return head_line, head_dot, nozzle_text, step_text
+        for sp in scatter_placed:
+            sp.set_visible(False)
+        return artists
 
-    def animate(frame):
-        n = len(comps)
-        if frame == 0:
-            c = comps[0]
-            x_vals = [board_w / 2, c["x"]]
-            y_vals = [9, -c["y"]]
-        elif frame < n:
-            prev = comps[frame - 1]
-            c = comps[frame]
-            x_vals = [prev["x"], board_w / 2, board_w / 2, c["x"]]
-            y_vals = [-prev["y"], 9, 9, -c["y"]]
-        else:
-            c = comps[-1]
-            x_vals = [c["x"]]
-            y_vals = [-c["y"]]
+    # Precompute trail for each frame (cumulative path up to that frame)
+    trail_x_history = []
+    trail_y_history = []
+    for fd in frame_data:
+        trail_x_history.append(fd["x"])
+        trail_y_history.append(fd["y"])
 
-        head_line.set_data(x_vals, y_vals)
-        head_dot.set_data([x_vals[-1]], [y_vals[-1]])
+    def animate(frame_idx):
+        fd = frame_data[frame_idx]
+
+        # Head position
+        hx, hy = fd["x"], fd["y"]
+        head_dot.set_data([hx], [hy])
+
+        # Trail up to this frame
+        trail_line.set_data(trail_x_history[:frame_idx + 1],
+                            trail_y_history[:frame_idx + 1])
+
+        # Placed/unplaced dots
+        placed_up_to = fd["placed"]
+        for i in range(n):
+            sp = scatter_placed[i]
+            su = scatter_unplaced[i]
+            if placed_up_to is not None and i <= placed_up_to:
+                sp.set_visible(True)
+                su.set_alpha(0.15)
+            else:
+                sp.set_visible(False)
+                su.set_alpha(0.15)
+
+        # Dashed line to target
+        ci = fd["comp_idx"]
+        c = comps[ci]
+        target_line.set_data([hx, c["x"]], [hy, -c["y"]])
 
         nozzle_text.set_text(f"Nozzle: {c['ref']} ({c['val']})")
-        nozzle_text.set_position((x_vals[-1] + 1, y_vals[-1] + 1))
+        nozzle_text.set_position((hx + 1.5, hy + 1.5))
 
-        step = min(frame + 1, n)
         step_text.set_text(
-            f"Step {step}/{n} \u2014 "
-            f"Placing {c['ref']} at ({c['x']:.1f}, {c['y']:.1f})mm [{c['side']}]"
+            f"Frame {frame_idx + 1}/{len(frame_data)} | {fd['label']}"
         )
-        return head_line, head_dot, nozzle_text, step_text
+
+        return artists
 
     ani = animation.FuncAnimation(
-        fig, animate, frames=len(comps) + 1,
-        init_func=init, interval=800, repeat=True, blit=True
+        fig, animate, frames=len(frame_data),
+        init_func=init, interval=80, repeat=True, blit=True
     )
 
     plt.tight_layout()
 
     if save_path:
-        print(f"Saving animation to {save_path} ...")
-        ani.save(save_path, writer="pillow", fps=1.25, dpi=120)
+        print(f"Saving animation ({len(frame_data)} frames) to {save_path} ...")
+        ani.save(save_path, writer="pillow", fps=10, dpi=100)
         print("Done.")
     else:
         plt.show()
+
+    return ani
 
 
 def main():
@@ -161,11 +254,13 @@ def main():
         else:
             save_path = args.save
 
-    # Use non-interactive backend if saving
     if save_path:
         matplotlib.use("Agg")
 
-    build_animation(comps, save_path)
+    fd = build_frame_data(comps)
+    print(f"Generated {len(fd)} animation frames")
+
+    build_animation(comps, fd, save_path)
 
 
 if __name__ == "__main__":
