@@ -238,18 +238,20 @@ def plot_analysis(comps, save_path=None):
                     fontsize=7, ha="center", va="center",
                     weight="bold", color="white")
 
-    # Path arrows
+    # Path arrows + step numbers on board
     prev_pt = FEEDER
     for i, c in enumerate(comps):
         pt = comp_pos(c)
-        dx, dy = pt[0] - prev_pt[0], pt[1] - prev_pt[1]
         ax.annotate("", xy=pt, xytext=prev_pt,
                     arrowprops=dict(arrowstyle="->", color="red",
                                     lw=1.5, alpha=0.6))
-        # Step number along path (midpoint)
-        mid = ((prev_pt[0] + pt[0]) / 2, (prev_pt[1] + pt[1]) / 2)
-        ax.text(mid[0], mid[1], str(i + 1), fontsize=6, color="red",
-                ha="center", va="bottom", alpha=0.7, weight="bold")
+        # Step number near component, offset to not overlap
+        off_x = 2.5 if pt[0] < BOARD_W / 2 else -2.5
+        off_y = 2.5 if pt[1] > -BOARD_H / 2 else -2.5
+        ax.text(pt[0] + off_x, pt[1] + off_y, str(i + 1),
+                fontsize=7, color="white", weight="bold",
+                bbox=dict(boxstyle="circle,pad=0.15", facecolor="red",
+                          edgecolor="darkred", alpha=0.8))
         prev_pt = pt
 
         # Return arrow (except last)
@@ -556,6 +558,24 @@ def animate_trajectory(comps, save_path=None):
     ]
     ax.legend(handles=leg_elements, loc="lower left", fontsize=7)
 
+    # ── "Printing" effect elements ──
+    # Placement burst ring
+    burst_ring = mpatches.Circle((0, 0), 0, fill=False,
+                                  edgecolor="#ffcc00", linewidth=3, alpha=0,
+                                  zorder=7)
+    ax.add_patch(burst_ring)
+    # Component value label that appears on placement
+    val_labels = []
+    for i, c in enumerate(comps):
+        pt = comp_pos(c)
+        t = ax.text(pt[0], pt[1] - 4.5, c["val"],
+                     fontsize=5, ha="center", va="top",
+                     color="#333", alpha=0, zorder=4)
+        val_labels.append(t)
+    # Impact cross marker at newly placed component
+    (impact_cross,) = ax.plot([], [], "w+", markersize=18, alpha=0,
+                               markeredgewidth=2, zorder=7)
+
     # Animated elements
     (trail_line,) = ax.plot([], [], "r-", linewidth=2.5, alpha=0.7, zorder=4)
     (head_dot,) = ax.plot([], [], "o", color="#ff2200", markersize=14,
@@ -572,7 +592,7 @@ def animate_trajectory(comps, save_path=None):
     stats_text = ax.text(0.02, -BOARD_H - 6.8, "", fontsize=8,
                          color="#444", transform=ax.transData)
 
-    # Progress bar background
+    # Progress bar
     bar_ax = fig.add_axes([0.12, 0.04, 0.76, 0.025])
     bar_ax.set_xlim(0, 1)
     bar_ax.set_ylim(0, 1)
@@ -583,12 +603,17 @@ def animate_trajectory(comps, save_path=None):
                                    facecolor="#e74c3c", edgecolor="none")
     bar_ax.add_patch(bar_fill)
 
-    artists = [trail_line, head_dot, head_glow, target_line,
-               label_text, progress_text, stats_text, bar_fill]
+    all_artists = [trail_line, head_dot, head_glow, target_line,
+                   label_text, progress_text, stats_text, bar_fill,
+                   burst_ring, impact_cross] + val_labels
 
     trail_x, trail_y = [], []
+    last_placed = -1  # track last placed component index for burst effect
+    burst_frame = 0   # countdown for burst animation
 
     def init():
+        trail_x.clear()
+        trail_y.clear()
         trail_line.set_data([], [])
         head_dot.set_data([], [])
         head_glow.set_data([], [])
@@ -597,11 +622,22 @@ def animate_trajectory(comps, save_path=None):
         progress_text.set_text("")
         stats_text.set_text("")
         bar_fill.set_width(0)
+        burst_ring.set_center((0, 0))
+        burst_ring.set_radius(0)
+        burst_ring.set_alpha(0)
+        impact_cross.set_data([], [])
+        impact_cross.set_alpha(0)
         for sp in placed_dots:
             sp.set_visible(False)
-        return artists + placed_dots + unplaced_dots
+        for vt in val_labels:
+            vt.set_alpha(0)
+        nonlocal last_placed, burst_frame
+        last_placed = -1
+        burst_frame = 0
+        return all_artists + placed_dots + unplaced_dots
 
     def animate(frame_idx):
+        nonlocal last_placed, burst_frame
         fd = frame_data[frame_idx]
         hx, hy = fd["x"], fd["y"]
         head_dot.set_data([hx], [hy])
@@ -625,6 +661,30 @@ def animate_trajectory(comps, save_path=None):
                 placed_dots[i].set_visible(False)
                 unplaced_dots[i].set_alpha(0.15)
 
+        # ── "Printing" burst effect ──
+        if placed_up_to is not None and placed_up_to > last_placed:
+            # Freshly placed — start burst
+            last_placed = placed_up_to
+            burst_frame = DWELL_STEPS
+            impact_cross.set_data([ct[0]], [ct[1]])
+            impact_cross.set_alpha(1)
+            # Show value label
+            val_labels[placed_up_to].set_alpha(0.9)
+
+        if burst_frame > 0:
+            # Expanding ring + fading cross
+            t = burst_frame / DWELL_STEPS
+            r = 2 + 6 * (1 - t)  # radius shrinks from 8 to 2
+            a = 0.6 * t          # alpha fades from 0.6 to 0
+            burst_ring.set_center(ct)
+            burst_ring.set_radius(r)
+            burst_ring.set_alpha(a)
+            impact_cross.set_alpha(t)
+            burst_frame -= 1
+        else:
+            burst_ring.set_alpha(0)
+            impact_cross.set_alpha(0)
+
         label_text.set_text(f"{fd['label']}")
         progress_text.set_text(
             f"Frame {frame_idx + 1}/{total_frames}  |  "
@@ -639,7 +699,7 @@ def animate_trajectory(comps, save_path=None):
 
         bar_fill.set_width((frame_idx + 1) / total_frames)
 
-        return artists + placed_dots + unplaced_dots
+        return all_artists + placed_dots + unplaced_dots
 
     use_blit = save_path is None
     ani = animation.FuncAnimation(
