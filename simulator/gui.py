@@ -6,20 +6,22 @@ Usage:
   python simulator/gui.py
 
 Launches QEMU with the firmware, opens a calculator window with a
-numeric display and keypad. Key presses are sent via UART, display
-updates are received and shown on the 7-segment-style LED.
+7-segment numeric display, an OLED status panel, and a keypad.
+Key presses are sent via QEMU's serial stdin; display updates are
+received from QEMU's serial stdout.
 """
 
 import subprocess
 import time
-import socket
 import tkinter as tk
 import os
 import sys
+import fcntl
 
 FIRMWARE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "firmware")
 FIRMWARE_ELF = os.path.join(FIRMWARE_DIR,
                              "target/thumbv7m-none-eabi/debug/calculator")
+FIRMWARE_BIN = FIRMWARE_ELF + ".bin"
 QEMU = "/opt/homebrew/bin/qemu-system-arm"
 
 
@@ -30,24 +32,24 @@ class CalculatorGUI:
         self.root.resizable(False, False)
 
         self.process = None
-        self.sock = None
         self.running = True
         self.display_text = tk.StringVar(value="       0")
+        self.oled_lines = ["", ""]
+        self._line_buf = ""
 
         self._build_ui()
         self._launch_qemu()
-        self.root.after(500, self._connect_serial)
+        self.status.config(text="Starting QEMU...")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_serial)
 
     def _build_ui(self):
         # ── 7-segment style display ──
-        display_frame = tk.Frame(self.root, bg="#222", padx=10, pady=10)
-        display_frame.pack(fill="x")
+        display_frame = tk.Frame(self.root)
+        display_frame.pack(fill="x", padx=10, pady=(10, 2))
 
         disp_canvas = tk.Canvas(display_frame, width=400, height=80,
-                                 bg="#1a1a1a", highlightthickness=2,
-                                 highlightbackground="#444")
+                                 bg="white", highlightthickness=0)
         disp_canvas.pack()
         self.disp_canvas = disp_canvas
 
@@ -61,9 +63,22 @@ class CalculatorGUI:
             seg = SevenSegment(disp_canvas, x, 12, seg_w, 56, i)
             self.seg_digits.append(seg)
 
+        # ── OLED panel (main user display) ──
+        oled_frame = tk.Frame(self.root)
+        oled_frame.pack(fill="x", padx=10, pady=(2, 10))
+        self.oled_canvas = tk.Canvas(oled_frame, width=400, height=64,
+                                      bg="#f0f4ff", highlightthickness=0)
+        self.oled_canvas.pack()
+        self.oled_canvas.create_text(4, 2, text="OLED", anchor="nw",
+            fill="#888", font=("Courier", 7))
+        self.oled_line1 = self.oled_canvas.create_text(200, 18, text="",
+            fill="#036", font=("Courier", 16, "bold"), anchor="center")
+        self.oled_line2 = self.oled_canvas.create_text(200, 42, text="",
+            fill="#036", font=("Courier", 16, "bold"), anchor="center")
+
         # ── Keypad ──
-        keypad = tk.Frame(self.root, padx=10, pady=10, bg="#333")
-        keypad.pack()
+        keypad = tk.Frame(self.root)
+        keypad.pack(padx=10, pady=(0, 10))
 
         key_defs = [
             ("7", "8", "9", "/"),
@@ -81,7 +96,7 @@ class CalculatorGUI:
         }
 
         for row_keys in key_defs:
-            row = tk.Frame(keypad, bg="#333")
+            row = tk.Frame(keypad)
             row.pack()
             for k in row_keys:
                 bg = "#d45" if k == "C" else "#e82" if k == "=" else "#555"
@@ -89,81 +104,93 @@ class CalculatorGUI:
                 btn = tk.Button(row, text=k, font=("Courier", 16, "bold"),
                                 width=4, height=2, bg=bg, fg=fg,
                                 activebackground="#777",
-                                command=lambda key=k: self._press_key(key))
+                                command=lambda key=k: self._send_key(key))
                 btn.pack(side="left", padx=3, pady=3)
 
         # Status bar
-        self.status = tk.Label(self.root, text="Connecting to QEMU...",
-                                bg="#222", fg="#aaa", anchor="w", padx=10)
-        self.status.pack(fill="x")
+        self.status = tk.Label(self.root, text="Starting QEMU...",
+                                bg="#eee", fg="#666", anchor="w",
+                                font=("Courier", 9))
+        self.status.pack(fill="x", padx=10)
 
     def _launch_qemu(self):
-        # Build firmware first
+        # Build firmware with flat binary
+        env = os.environ.copy()
+        env["RUSTFLAGS"] = "-C link-arg=-Tlink.ld"
         build = subprocess.run(
             ["cargo", "build", "--target", "thumbv7m-none-eabi"],
-            cwd=FIRMWARE_DIR, capture_output=True, text=True)
+            cwd=FIRMWARE_DIR, capture_output=True, text=True, env=env)
         if build.returncode != 0:
             self.status.config(text="Firmware build FAILED")
-            print(build.stderr)
             self.running = False
             return
+        # Convert ELF to flat binary
+        subprocess.run(
+            ["rust-objcopy", "-O", "binary", FIRMWARE_BIN[:-4], FIRMWARE_BIN],
+            capture_output=True)
 
-        # Launch QEMU with serial via TCP (no PTY to parse)
+        # Launch QEMU with serial over stdio (via -nographic)
+        # Note: -serial tcp is not used because QEMU 11 on macOS 15.6
+        # has a compatibility issue with the TCP chardev backend.
         cmd = [
             QEMU, "-M", "lm3s6965evb",
             "-nographic",
-            "-serial", "tcp::12345,server,nowait",
-            "-kernel", FIRMWARE_ELF,
+            "-kernel", FIRMWARE_BIN,
         ]
         self.process = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def _connect_serial(self):
-        import socket, time
-        for attempt in range(10):
-            try:
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(1)
-                self.sock.connect(("127.0.0.1", 12345))
-                self.sock.settimeout(0.05)
-                self.status.config(text="Running")
-                return
-            except Exception:
-                time.sleep(0.5)
-        self.status.config(text="Failed to connect to QEMU")
+            cmd,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, bufsize=0)
+        # Set stdout to non-blocking so _poll_serial never hangs
+        fl = fcntl.fcntl(self.process.stdout, fcntl.F_GETFL)
+        fcntl.fcntl(self.process.stdout, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        # Let QEMU boot before first poll
+        time.sleep(2)
+        self.status.config(text="Running")
 
     def _send_key(self, key):
-        if self.sock:
+        if self.process and self.process.stdin:
             data = self.key_send.get(key)
             if data:
                 try:
-                    self.sock.sendall(data)
+                    self.process.stdin.write(data)
+                    self.process.stdin.flush()
                 except Exception:
                     self.status.config(text="Connection lost")
-                    self.sock = None
+                    self.process = None
 
     def _poll_serial(self):
         if not self.running:
             return
-        if self.sock:
+        if self.process and self.process.stdout:
             try:
-                data = self.sock.recv(4096)
+                data = os.read(self.process.stdout.fileno(), 4096)
                 if data:
-                    for line in data.decode(errors="replace").split("\n"):
-                        line = line.strip()
+                    self._line_buf += data.decode(errors="replace")
+                    while "\n" in self._line_buf:
+                        raw, self._line_buf = self._line_buf.split("\n", 1)
+                        line = raw.strip("\r")
                         if line:
                             self._handle_serial_line(line)
-            except socket.timeout:
+            except BlockingIOError:
                 pass
-            except (ConnectionResetError, BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError):
                 self.status.config(text="Connection lost")
-                self.sock = None
+                self.process = None
         self.root.after(50, self._poll_serial)
 
     def _handle_serial_line(self, line):
         if line.startswith("D:"):
-            val_str = line[2:].strip()
+            val_str = line[3:]
             self._update_display(val_str)
+        elif line.startswith("O:"):
+            parts = line[2:].split("|", 1)
+            l1 = parts[0].strip() if parts else ""
+            l2 = parts[1].strip() if len(parts) > 1 else ""
+            self.oled_lines = [l1, l2]
+            self.oled_canvas.itemconfig(self.oled_line1, text=l1)
+            self.oled_canvas.itemconfig(self.oled_line2, text=l2)
+            self.status.config(text=f"OLED: {l1}  |  {l2}" if l2 else f"OLED: {l1}")
         elif line.startswith("E:"):
             self._update_display("Error   ")
             self.status.config(text=line[2:])
@@ -171,25 +198,22 @@ class CalculatorGUI:
             self.status.config(text=line[:50])
 
     def _update_display(self, val_str):
-        # val_str is 8 characters: right-aligned number with leading spaces
-        self.display_text.set(val_str)
-        for i, ch in enumerate(val_str):
-            if i < 8:
-                self.seg_digits[i].set_char(ch)
+        raw = val_str.ljust(8)[:8]
+        self.display_text.set(raw)
+        for i, ch in enumerate(raw):
+            self.seg_digits[i].set_char(ch)
 
     def _on_close(self):
         self.running = False
-        if self.sock:
-            try:
-                self.sock.close()
-            except Exception:
-                pass
         if self.process:
-            self.process.terminate()
             try:
+                self.process.terminate()
                 self.process.wait(timeout=2)
             except Exception:
-                self.process.kill()
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
         self.root.destroy()
 
     def run(self):
@@ -261,8 +285,8 @@ class SevenSegment:
             self.seg_ids[name] = rid
 
     def set_char(self, ch):
-        on_color = "#00ff88"
-        off_color = "#2a2a2a"
+        on_color = "#080"
+        off_color = "#ddd"
         segments = self.SEGMENTS.get(ch, (0,0,0,0,0,0,0))
         names = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
         for name, state in zip(names, segments):
