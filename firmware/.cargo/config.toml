@@ -1,6 +1,2 @@
-[target.thumbv7m-none-eabi]
-runner = "qemu-system-arm -M lm3s6965evb -nographic -kernel"
-rustflags = ["-C", "link-arg=-Tlink.x"]
-
 [build]
 target = "thumbv7m-none-eabi"
