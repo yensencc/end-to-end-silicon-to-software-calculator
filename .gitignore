@@ -6,4 +6,8 @@ fab/
 fab_demo/
 rtl/obj_dir/
 firmware/target/
+firmware/firmware.bin
 *.vcd
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
