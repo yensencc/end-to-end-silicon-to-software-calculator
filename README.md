@@ -1,50 +1,74 @@
 # Calculator MVP — End-to-End Silicon to Software
 
-A zero-hardware calculator build that spans RTL (Verilog) → PCB (KiCad) → Firmware (Rust) → Agent (Python). Simulate everything on your Mac — no physical hardware required.
+A zero-hardware calculator build that spans RTL (Verilog) → PCB (KiCad) → Firmware (Rust) → Interactive Simulation (QEMU + Tkinter) → PnP Analysis (Python). Simulate everything on your Mac — no physical hardware required.
+
+Click the keypad on the actual PCB layout and watch the 7-segment display update, driven by real firmware on an emulated ARM Cortex-M3.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────┐
-│  AGENT  (agent/build_agent.py)          │
-│  Runs: make simulate-rtl, simulate-fw   │
-│  Reports: PASS/FAIL per layer           │
-└──────────────────────────────────────────┘
-                    │
-┌──────────────────────────────────────────┐
-│  FIRMWARE  (firmware/src/main.rs)       │
-│  ARM Cortex-M3 no_std Rust              │
-│  ALU ops: add, sub, mul                 │
-│  Runs in QEMU lm3s6965evb              │
-└──────────────────────────────────────────┘
-                    │
-┌──────────────────────────────────────────┐
-│  RTL  (rtl/*.v)                         │
-│  8-bit ALU, 4x4 keypad, 7-seg display  │
-│  Simulated with Verilator 5.x           │
-│  Tests: 2+2=4, 5+3=8, 10-3=7, 200-50=150│
-└──────────────────────────────────────────┘
-                    │
-┌──────────────────────────────────────────┐
-│  PCB  (schematic/calculator.kicad_pcb)  │
-│  LQFP-48 MCU, 4x4 keypad matrix,        │
-│  7-segment display, SWD programming,    │
-│  62×42mm board with routed traces       │
-│  Gerbers + POS CSV → ready for fab      │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  INTERACTIVE PCB GUI (simulator/pcb_gui.py) │
+│  KiCad PCB image as window, clickable keys   │
+│  at real switch positions, live 7-segment    │
+│  display — talks to QEMU via TCP serial      │
+└──────────────────────┬───────────────────────┘
+                       │ TCP :12345
+┌──────────────────────────────────────────────┐
+│  QEMU ARM Cortex-M3 — real firmware          │
+│  (firmware/src/main.rs) no_std Rust          │
+│  Calculator state machine: + - * / = C      │
+│  UART polled driver at 0x4000C000           │
+└──────────────────────┬───────────────────────┘
+                       │
+┌──────────────────────────────────────────────┐
+│  AGENT & ANALYSIS (agent/)                   │
+│  build_agent.py — 5-step pipeline runner    │
+│  visualize_pnp.py — PnP head travel GIF     │
+│  analyze_pnp.py — trajectory analysis with  │
+│    PCB background, head animation, stats    │
+└──────────────────────┬───────────────────────┘
+                       │
+┌──────────────────────────────────────────────┐
+│  FIRMWARE (firmware/src/main.rs)            │
+│  compiled for thumbv7m-none-eabi            │
+│  runs in QEMU lm3s6965evb                   │
+└──────────────────────┬───────────────────────┘
+                       │
+┌──────────────────────────────────────────────┐
+│  RTL (rtl/*.v)                              │
+│  8-bit ALU, 4x4 keypad, 7-seg display      │
+│  Simulated with Verilator 5.x               │
+│  Tests: 2+2=4, 5+3=8, 10-3=7, 200-50=150   │
+└──────────────────────┬───────────────────────┘
+                       │
+┌──────────────────────────────────────────────┐
+│  PCB (schematic/calculator.kicad_pcb)       │
+│  LQFP-48 MCU, 4x4 keypad matrix,            │
+│  7-segment display, SWD programming,        │
+│  62×42mm board, 107 routed traces           │
+│  Gerbers + POS CSV → ready for fab          │
+└──────────────────────────────────────────────┘
 ```
 
 ## Quick Start
 
 ```bash
-# Full pipeline: RTL sim → Firmware sim → Agent report
+# Interactive: click the actual PCB keypad, see live results
+make simulate-pcb
+
+# Or the full pipeline: RTL sim → Firmware sim → Agent report
 make all
 
 # Or step by step:
 make simulate-rtl       # Verilator: 4 ALU tests
 make simulate-fw        # QEMU: prints 2+2=4
+make simulate           # Interactive: Tkinter calculator + QEMU
+make simulate-pcb       # Interactive: PCB background + QEMU
 make export             # Gerbers + 3D render + DRC
 make visualize          # Export + open 3D render + gerbv
+make visualize-pnp      # PnP head travel animation GIF
+make analyze-pnp        # Full trajectory analysis (4 outputs)
 make agent              # Pipeline status report
 ```
 
@@ -63,14 +87,19 @@ calculator-mvp/
 │   ├── Cargo.toml            # Rust project (thumbv7m-none-eabi)
 │   ├── memory.x              # Linker script (256K FLASH, 64K RAM)
 │   ├── .cargo/config.toml    # Build target config
-│   └── src/main.rs           # Calculator logic, semihosting output
+│   └── src/main.rs           # Calculator logic, UART polled driver
 ├── schematic/
 │   ├── calculator.kicad_pro  # KiCad project
 │   ├── calculator.kicad_sch  # Schematic (placeholder)
 │   ├── calculator.kicad_pcb  # PCB with routed traces (1674 lines)
 │   └── calculator.kicad_prl  # Project local settings
+├── simulator/
+│   ├── gui.py                # Tkinter calculator (generic look)
+│   └── pcb_gui.py            # PCB-based GUI (actual board image)
 ├── agent/
-│   └── build_agent.py        # Pipeline runner script
+│   ├── build_agent.py        # 5-step pipeline runner
+│   ├── visualize_pnp.py      # PnP head travel animation
+│   └── analyze_pnp.py        # Full trajectory analysis
 ├── fab/                      # Generated outputs (gitignored)
 │   ├── calculator-F_Cu.gtl   # Top copper Gerber
 │   ├── calculator-B_Cu.gbl   # Bottom copper Gerber
@@ -81,7 +110,13 @@ calculator-mvp/
 │   ├── calculator.drl        # NC drill file
 │   ├── calculator_pos.csv    # Pick-and-place (27 components)
 │   ├── calculator_3d.png     # 3D board render
-│   └── calculator-job.gbrjob        # Gerber job file
+│   ├── calculator_pcb.png    # PCB background image for GUI
+│   ├── trajectory_analysis.png   # Static path map with stats
+│   ├── trajectory_analysis.gif   # Animated head travel + PCB
+│   ├── trajectory.gif            # Simple head animation
+│   ├── optimization_compare.png  # Original vs optimized sequence
+│   ├── placement.gif             # PnP head travel GIF
+│   └── calculator-job.gbrjob     # Gerber job file
 └── README.md
 ```
 
@@ -91,10 +126,14 @@ calculator-mvp/
 |--------|-------------|
 | `make setup` | Check dependencies (verilator, qemu) |
 | `make simulate-rtl` | Compile Verilog + run ALU tests via Verilator |
-| `make simulate-fw` | Build Rust firmware + run in QEMU ARM Cortex-M3 |
+| `make simulate-fw` | Build Rust firmware + run in QEMU, then exit |
+| `make simulate` | Interactive: Tkinter calculator GUI + QEMU firmware |
+| `make simulate-pcb` | **Interactive: actual PCB image as GUI** + QEMU firmware |
 | `make check-schematic` | KiCad ERC (schematic electrical rules) |
 | `make export` | Generate Gerbers, drill, 3D render, DRC report |
 | `make visualize` | Export + open 3D render in Preview and gerbv |
+| `make visualize-pnp` | PnP head travel animation → `fab/placement.gif` |
+| `make analyze-pnp` | Full SMT trajectory analysis (4 outputs to `fab/`) |
 | `make agent` | Run all pipeline steps and report PASS/FAIL |
 | `make all` | setup → simulate-rtl → simulate-fw → check-schematic → agent |
 | `make clean` | Remove build artifacts |
@@ -152,16 +191,72 @@ The `build_agent.py` script runs three pipeline steps:
 
 The agent runs `make` targets from the project root and exits with status 0 only if all steps pass.
 
+## Interactive Simulation
+
+Two GUI modes connect the real firmware running on QEMU to a clickable calculator:
+
+### `make simulate` — Generic Calculator GUI
+A clean Tkinter window with a 7-segment-style display and keypad buttons. Fast, simple, no dependencies beyond tkinter.
+
+### `make simulate-pcb` — PCB-Based GUI (recommended)
+Shows the **actual KiCad PCB** as the background — copper traces, silkscreen, component outlines all visible. Clickable switch overlays at the real SW1–SW16 positions on the board, with the 7-segment LED display rendered at the DISP1 location.
+
+```
+┌─────────────────────────────────────────────┐
+│  Calculator PCB — QEMU Cortex-M3           │
+│  ┌───────────────────────────────────┐     │
+│  │ ┌───────────────────────────────┐ │     │
+│  │ │  ╔═╗ ╔═╗ ╔═╗ ╔═╗ ╔═╗ ╔═╗ ╔═╗ ╔═╗│ │     │
+│  │ │  ║ ║ ║ ║ ║7║ ║ ║ ║ ║ ║ ║ ║ ║ ║ │ │     │
+│  │ │  ╚═╝ ╚═╝ ╚═╝ ╚═╝ ╚═╝ ╚═╝ ╚═╝ ╚═╝│ │     │
+│  │ └───────────────────────────────┘ │     │
+│  │                                    │     │
+│  │   [7]  [8]  [9]  [/]   ← actual   │     │
+│  │   [4]  [5]  [6]  [*]   switch     │     │
+│  │   [1]  [2]  [3]  [-]   positions  │     │
+│  │   [C]  [0]  [=]  [+]   on PCB     │     │
+│  └───────────────────────────────────┘     │
+│  Status: Running                           │
+└─────────────────────────────────────────────┘
+```
+
+Key mapping (standard calculator layout on the 4×4 matrix):
+
+```
+SW1(7)  SW2(8)  SW3(9)  SW4(/)
+SW5(4)  SW6(5)  SW7(6)  SW8(*)
+SW9(1)  SW10(2) SW11(3) SW12(-)
+SW13(C) SW14(0) SW15(=) SW16(+)
+```
+
+Both modes use TCP serial (`tcp::12345`) to communicate with QEMU — no PTY race conditions.
+
+## Pick-and-Place Analysis
+
+Two visualization targets simulate the SMT assembly process:
+
+| Target | Output | What It Shows |
+|--------|--------|---------------|
+| `make visualize-pnp` | `fab/placement.gif` | Head traveling from feeder to each component, placing them one by one (373 frames) |
+| `make analyze-pnp` | `fab/trajectory_analysis.png` | Static PCB map with component dots, path arrows, step circles, stats panel |
+| | `fab/optimization_compare.png` | Side-by-side original vs. optimized placement sequence |
+| | `fab/trajectory.gif` | Head travel animation with step numbers |
+| | `fab/trajectory_analysis.gif` | Full animated analysis: PCB background, head travel, placement burst, live stats |
+
+The trajectory analyzer uses the actual PCB background (exported from KiCad), places components at their real coordinates, and simulates the Fuji AIMEX III head path with smooth interpolation (TRAVEL: 6 steps, DWELL: 2 steps).
+
 ## Iteration Loop
 
 ```
-1. Edit rtl/alu.v            → Add a new ALU operation
-   make simulate-rtl          → See test results
-2. Edit firmware/src/main.rs  → Use the new operation
-   make simulate-fw           → See QEMU output
+1. Edit rtl/alu.v               → Add a new ALU operation
+   make simulate-rtl             → See test results
+2. Edit firmware/src/main.rs     → Use the new operation
+   make simulate-fw              → See QEMU output
 3. Edit schematic/calculator.kicad_pcb → Add/reposition components
-   make visualize              → See 3D render + Gerber preview
-4. Run make agent              → Full pipeline report
+   make simulate-pcb              → See the updated board as an interactive GUI
+4. Run make agent                 → Full pipeline report
+5. Run make visualize-pnp         → See assembly animation
+6. Run make analyze-pnp           → See trajectory analysis
 ```
 
 Sub-second rebuilds for RTL (Verilator cache) and firmware (Cargo incremental).
