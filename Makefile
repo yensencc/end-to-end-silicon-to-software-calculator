@@ -1,4 +1,4 @@
-.PHONY: all setup simulate-rtl simulate-fw check-schematic agent export visualize simulate clean
+.PHONY: all setup simulate-rtl simulate-fw check-schematic agent export visualize simulate simulate-pcb clean
 
 SHELL := /bin/bash
 PATH := $(HOME)/.cargo/bin:$(PATH)
@@ -51,11 +51,19 @@ simulate-rtl:
 	cd rtl && ./obj_dir/Vtop
 	@echo "RTL simulation complete."
 
-simulate-fw:
-	@echo "--- Firmware Simulation ---"
-	cd firmware && cargo build --target thumbv7m-none-eabi 2>&1
-	/opt/homebrew/bin/qemu-system-arm -M lm3s6965evb -nographic -semihosting -kernel firmware/target/thumbv7m-none-eabi/debug/calculator
-	@echo "Firmware simulation complete."
+FIRMWARE_ELF := firmware/target/thumbv7m-none-eabi/debug/calculator
+FIRMWARE_BIN := $(FIRMWARE_ELF).bin
+
+# Build ELF then convert to flat binary (required for correct VMA 0x0 loading)
+$(FIRMWARE_BIN): $(FIRMWARE_ELF)
+	rust-objcopy -O binary $< $@
+
+$(FIRMWARE_ELF):
+	cd firmware && RUSTFLAGS="-C link-arg=-Tlink.ld" cargo build --target thumbv7m-none-eabi 2>&1
+
+simulate-fw: $(FIRMWARE_BIN)
+	@echo "--- Firmware Simulation (type calculator keys, Ctrl-C to exit) ---"
+	/opt/homebrew/bin/qemu-system-arm -M lm3s6965evb -serial stdio -kernel $(FIRMWARE_BIN)
 
 check-schematic:
 	@echo "--- Schematic Check ---"
@@ -67,10 +75,13 @@ check-schematic:
 		echo "Skipping schematic check (optional for MVP)."; \
 	fi
 
-simulate:
+simulate: $(FIRMWARE_BIN)
 	@echo "--- Interactive QEMU Calculator (close GUI to exit) ---"
-	cd firmware && cargo build --target thumbv7m-none-eabi 2>&1
-	python3 simulator/gui.py
+	$$HOME/calc-venv/bin/python3 simulator/gui.py
+
+simulate-pcb: $(FIRMWARE_BIN)
+	@echo "--- Interactive QEMU Calculator on PCB (close GUI to exit) ---"
+	$$HOME/calc-venv/bin/python3 simulator/pcb_gui.py
 
 agent:
 	@echo "--- Agent Run ---"
